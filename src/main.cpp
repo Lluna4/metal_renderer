@@ -10,10 +10,12 @@
 #include <QuartzCore/CAMetalLayer.hpp>
 #include <QuartzCore/QuartzCore.hpp>
 #include <AppKit/AppKit.hpp>
+#include <random>
 #include <iostream>
 #include <fstream>
 #include <sstream>
 #include <simd/simd.h>
+#include <math.h>
 
 #include "backend/glfw_adapter.h"
 
@@ -33,6 +35,50 @@ struct point_pos
 {
     float x, y;
 };
+
+simd::float4x4 identity_mat()
+{
+    simd_float4 col0 = {1.0f, 0.0f, 0.0f, 0.0f};
+    simd_float4 col1 = {0.0f, 1.0f, 0.0f, 0.0f};
+    simd_float4 col2 = {0.0f, 0.0f, 1.0f, 0.0f};
+    simd_float4 col3 = {0.0f, 0.0f, 0.0f, 1.0f};
+    
+    return simd_matrix(col0, col1, col2, col3);
+}
+
+simd::float4x4 translation(simd::float3 dPos)
+{
+    simd_float4 col0 = {1.0f, 0.0f, 0.0f, 0.0f};
+    simd_float4 col1 = {0.0f, 1.0f, 0.0f, 0.0f};
+    simd_float4 col2 = {0.0f, 0.0f, 1.0f, 0.0f};
+    simd_float4 col3 = {dPos[0], dPos[1], dPos[2], 1.0f};
+
+    return simd_matrix(col0, col1, col2, col3);
+}
+
+simd::float4x4 z_rotation(float theta)
+{
+    theta = theta * M_PI / 180.0f;
+    float c = cosf(theta);
+    float s = sinf(theta);
+
+    simd_float4 col0 = {c, s, 0.0f, 0.0f};
+    simd_float4 col1 = {-s, c, 0.0f, 0.0f};
+    simd_float4 col2 = {0.0f, 0.0f, 1.0f, 0.0f};
+    simd_float4 col3 = {0.0f, 0.0f, 0.0f, 1.0f};
+
+    return simd_matrix(col0, col1, col2, col3);
+}
+
+simd::float4x4 scale(float factor)
+{
+    simd_float4 col0 = {factor, 0.0f, 0.0f, 0.0f};
+    simd_float4 col1 = {0.0f, factor, 0.0f, 0.0f};
+    simd_float4 col2 = {0.0f, 0.0f, factor, 0.0f};
+    simd_float4 col3 = {0.0f, 0.0f, 0.0f, 1.0f};
+    
+    return simd_matrix(col0, col1, col2, col3);
+}
 
 MTL::RenderPipelineState *build_shader(const char *filename, const char *vert_name, const char *frag_name, MTL::Device *device)
 {
@@ -149,14 +195,27 @@ mesh build_quadrilater(MTL::Device *device, point_pos *positions)
     return Mesh;
 }
 
+void draw(simd::float4x4 transform, MTL::RenderCommandEncoder* renderCommandEncoder, MTL::Buffer *buffer)
+{
+    renderCommandEncoder->setVertexBytes(&transform, sizeof(simd::float4x4), 1);
+    renderCommandEncoder->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(3));
+}
+
+void draw_indexed(simd::float4x4 transform, MTL::RenderCommandEncoder* renderCommandEncoder, mesh &mesh)
+{
+    renderCommandEncoder->setVertexBytes(&transform, sizeof(simd::float4x4), 1);
+    renderCommandEncoder->drawIndexedPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(6), MTL::IndexType::IndexTypeUInt16,
+                                                mesh.index_buffer, NS::UInteger(0), NS::UInteger(1));
+}
+
 int main() 
 {
-
     //glfw stuff
     glfwInit();
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     GLFWwindow* glfwWindow = glfwCreateWindow(800, 600, "Test", NULL, NULL);
-
+    std::default_random_engine generator;
+    std::uniform_real_distribution<float> distribution(0.0, 1.0);
     //Metal Device
     MTL::Device* device = MTL::CreateSystemDefaultDevice();
 
@@ -185,26 +244,28 @@ int main()
         return -1;
     }
     MTL::Buffer *triangleMesh = build_triangle(device);
-    point_pos positions[4] = 
-    {
-        {0.0f, 0.0f},  // Bottom left
-        {0.075f, 0.0f},  // Bottom right
-        {0.075f, 0.1f},  // Top right
-        {0.0f, 0.1f}   // Top left
-    };
-    float step = 0.01f;
+    mesh quadrilaterMesh = build_quadrilater(device);
+    float t = 0.0f;
+    float positions[1200];
+    for (auto &position: positions)
+        position = distribution(generator);
+    float steps[1200];
+    for (auto &step: steps)
+        step = 0.01f;
     while (!glfwWindowShouldClose(glfwWindow)) 
     {
+        t += 1.0f;
+        if (t > 360.0f)
+            t -= 360.0f;
         glfwPollEvents();
-        positions[0].x += step;
-        positions[1].x += step;
-        positions[2].x += step;
-        positions[3].x += step;
-        if (positions[1].x >= 1.0f)
-            step = -0.01;
-        else if (positions[0].x <= -1.0f)
-            step = 0.01;
-        mesh quadrilaterMesh = build_quadrilater(device, positions);
+        for (int i = 0; i < 1200; i++)
+        {
+            positions[i] += steps[i];
+            if (positions[i] > 0.75f)
+                steps[i] = -0.01;
+            else if (positions[i] < -0.75)
+                steps[i] = 0.01;
+        }
         NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
         metalDrawable = metalLayer->nextDrawable();
         MTL::CommandBuffer* commandBuffer = commandQueue->commandBuffer();
@@ -217,20 +278,19 @@ int main()
 
         MTL::RenderCommandEncoder* renderCommandEncoder = commandBuffer->renderCommandEncoder(renderPassDescriptor);
         renderCommandEncoder->setRenderPipelineState(general_pipeline);
+        simd::float4x4 transform = identity_mat();
         renderCommandEncoder->setVertexBuffer(quadrilaterMesh.vertex_buffer, 0, 0);
-        renderCommandEncoder->drawIndexedPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(6), MTL::IndexType::IndexTypeUInt16,
-                                                    quadrilaterMesh.index_buffer, NS::UInteger(0), NS::UInteger(1));
-        
-        /*
+        draw_indexed(transform, renderCommandEncoder, quadrilaterMesh);
         renderCommandEncoder->setVertexBuffer(triangleMesh, 0, 0);
-        renderCommandEncoder->drawPrimitives(MTL::PrimitiveTypeTriangle, NS::UInteger(0), NS::UInteger(3));
-        */
+        for (int i = 0; i < 1200; i++)
+        {
+            transform = translation(simd_float3{positions[i], 0.2f, 0.0f}) * z_rotation(t) * scale(0.3f);
+            draw(transform, renderCommandEncoder, triangleMesh);
+        }
         renderCommandEncoder->endEncoding();
         commandBuffer->presentDrawable(metalDrawable);
         commandBuffer->commit();
         commandBuffer->waitUntilCompleted();
-        quadrilaterMesh.vertex_buffer->release();
-        quadrilaterMesh.index_buffer->release();
         pool->release();
     }
 
